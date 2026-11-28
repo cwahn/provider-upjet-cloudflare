@@ -38,6 +38,7 @@ permissions:
 jobs:
   # ── Resolve version + package list ────────────────────────────────────
   prepare:
+    if: github.repository == 'wildbitca/provider-upjet-cloudflare'
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-24.04"') }}
     # Gates the entire release before any build/publish work starts: nothing
     # downstream runs until the custom deployment protection rule (deploy-gate,

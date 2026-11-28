@@ -1,0 +1,109 @@
+name: Publish Ars Vivendi Cloudflare providers
+
+on:
+  push:
+    tags: ['v*-arsvivendi.*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arsvivendi-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.27.4'
+  CROSSPLANE_VERSION: 'v2.3.3'
+  OPENTOFU_VERSION: '1.13.9'
+  TERRAFORM_PROVIDER_VERSION: '5.29.0'
+  FAMILY_REPOSITORY: ghcr.io/cwahn/provider-family-cloudflare
+  FAMILY_MIN_VERSION: v2.0.1-arsvivendi.1
+
+jobs:
+  verify:
+    if: github.repository == 'cwahn/provider-upjet-cloudflare' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release tag
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-arsvivendi\.[0-9]+$ ]]
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: make vendor vendor.check
+      - run: make -j2 test
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+      - name: Verify generator output
+        run: |
+          go install golang.org/x/tools/cmd/goimports@v0.42.0
+          go_bin="$(go env GOPATH)/bin"
+          export PATH="$go_bin:$PATH"
+          make check-diff
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      BUILD_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: v0.30.1
+      - name: Build and smoke-test native packages
+        run: |
+          [[ "$(go env GOHOSTARCH)" == "$BUILD_ARCH" ]]
+          bash scripts/arsvivendi-release.sh build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: xpkgs-${{ matrix.arch }}
+          path: _output/arsvivendi/linux_${{ matrix.arch }}/*.xpkg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    env:
+      BUILD_ARCH: amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: xpkgs-*
+          path: _output/arsvivendi/artifacts
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish multi-architecture packages
+        run: bash scripts/arsvivendi-release.sh publish

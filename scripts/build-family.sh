@@ -40,6 +40,8 @@ map_repo_name() {
 }
 
 REPO_NAME=$(map_repo_name "${SUBPACKAGE}")
+FAMILY_REPOSITORY="${FAMILY_REPOSITORY:-xpkg.upbound.io/wildbitca/provider-family-cloudflare}"
+FAMILY_MIN_VERSION="${FAMILY_MIN_VERSION:-${VERSION}}"
 WORK_DIR=$(mktemp -d)
 trap "rm -rf ${WORK_DIR}" EXIT
 
@@ -86,6 +88,17 @@ metadata:
     meta.crossplane.io/license: "Apache-2.0"
 YAML
 
+case "${FAMILY_REPOSITORY}:${SUBPACKAGE}" in
+    ghcr.io/cwahn/provider-family-cloudflare:config)
+        printf '    meta.crossplane.io/description: "%s"\n' \
+            "Upjet-based Crossplane provider family for the Cloudflare API. Shared ProviderConfig for all Cloudflare sub-providers." >>"${WORK_DIR}/crossplane.yaml"
+        ;;
+    ghcr.io/cwahn/provider-family-cloudflare:*)
+        printf '    meta.crossplane.io/description: "%s"\n' \
+            "Crossplane provider for Cloudflare ${SUBPACKAGE} resources. Part of provider-family-cloudflare." >>"${WORK_DIR}/crossplane.yaml"
+        ;;
+esac
+
 # Add family label to all family members (config + sub-providers, not monolith)
 # Crossplane RBAC manager uses this label to share RBAC across family members.
 # Without it on the config provider, sub-providers can't access ProviderConfig CRDs.
@@ -101,8 +114,8 @@ if [ "${SUBPACKAGE}" != "config" ] && [ "${SUBPACKAGE}" != "monolith" ]; then
     cat >>"${WORK_DIR}/crossplane.yaml" <<YAML
 spec:
   dependsOn:
-    - provider: xpkg.upbound.io/wildbitca/provider-family-cloudflare
-      version: ">= ${VERSION}"
+    - provider: ${FAMILY_REPOSITORY}
+      version: ">= ${FAMILY_MIN_VERSION}"
   capabilities:
     - SafeStart
 YAML
