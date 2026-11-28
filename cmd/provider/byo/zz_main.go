@@ -27,11 +27,15 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	authv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -75,6 +79,7 @@ func main() {
 
 		enableManagementPolicies = app.Flag("enable-management-policies", "Enable support for Management Policies.").Default("true").Envar("ENABLE_MANAGEMENT_POLICIES").Bool()
 		enableChangeLogs         = app.Flag("enable-changelogs", "Enable support for capturing change logs during reconciliation.").Default("false").Envar("ENABLE_CHANGE_LOGS").Bool()
+		enableSecretCache        = app.Flag("enable-secret-cache", "Enable caching for Secrets. Disabling this can reduce memory usage at the cost of additional API server load.").Default("true").Envar("ENABLE_SECRET_CACHE").Bool()
 
 		certsDirSet = false
 		certsDir    = app.Flag("certs-dir", "The directory that contains the server key and certificate.").Default(tlsServerCertDir).Envar(certsDirEnvVar).PreAction(func(_ *kingpin.ParseContext) error {
@@ -83,7 +88,18 @@ func main() {
 		}).String()
 	)
 
-	kingpin.MustParse(app.Parse(os.Args[1:]))
+	args := os.Args[1:]
+	// Kingpin's bool flags use --flag and --no-flag. Accept explicit boolean
+	// assignments too, so DeploymentRuntimeConfig can use --enable-secret-cache=false.
+	for i, arg := range args {
+		switch arg {
+		case "--enable-secret-cache=true":
+			args[i] = "--enable-secret-cache"
+		case "--enable-secret-cache=false":
+			args[i] = "--no-enable-secret-cache"
+		}
+	}
+	kingpin.MustParse(app.Parse(args))
 
 	zl := zap.New(zap.UseDevMode(*debug))
 	log := logging.NewLogrLogger(zl.WithName("provider-upjet-cloudflare"))
@@ -109,11 +125,32 @@ func main() {
 		}
 	}
 
+	scheme := runtime.NewScheme()
+	kingpin.FatalIfError(clientgoscheme.AddToScheme(scheme), "Cannot add client-go APIs to scheme")
+	kingpin.FatalIfError(apisCluster.AddToScheme(scheme), "Cannot add cluster-scoped UpjetCloudflare APIs to scheme")
+	kingpin.FatalIfError(apisNamespaced.AddToScheme(scheme), "Cannot add namespaced UpjetCloudflare APIs to scheme")
+	kingpin.FatalIfError(apiextensionsv1.AddToScheme(scheme), "Cannot add api-extensions APIs to scheme")
+	kingpin.FatalIfError(authv1.AddToScheme(scheme), "Cannot add k8s authorization APIs to scheme")
+
+	var clientOpts client.Options
+	if !*enableSecretCache {
+		clientOpts.Cache = &client.CacheOptions{
+			DisableFor: []client.Object{&corev1.Secret{}},
+		}
+	}
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:           scheme,
+		Client:           clientOpts,
 		LeaderElection:   *leaderElection,
 		LeaderElectionID: "crossplane-leader-election-provider-upjet-cloudflare-byo",
 		Cache: cache.Options{
 			SyncPeriod: syncPeriod,
+			ByObject: map[client.Object]cache.ByObject{
+				&apiextensionsv1.CustomResourceDefinition{}: {
+					Transform: customresourcesgate.TransformStripCRDSchema,
+				},
+			},
 		},
 		Metrics: metricsserver.Options{
 			BindAddress: *metricsBindAddress,
@@ -128,10 +165,6 @@ func main() {
 		RenewDeadline:              func() *time.Duration { d := 50 * time.Second; return &d }(),
 	})
 	kingpin.FatalIfError(err, "Cannot create controller manager")
-	kingpin.FatalIfError(apisCluster.AddToScheme(mgr.GetScheme()), "Cannot add cluster-scoped UpjetCloudflare APIs to scheme")
-	kingpin.FatalIfError(apisNamespaced.AddToScheme(mgr.GetScheme()), "Cannot add namespaced UpjetCloudflare APIs to scheme")
-	kingpin.FatalIfError(apiextensionsv1.AddToScheme(mgr.GetScheme()), "Cannot add api-extensions APIs to scheme")
-	kingpin.FatalIfError(authv1.AddToScheme(mgr.GetScheme()), "Cannot add k8s authorization APIs to scheme")
 
 	metricRecorder := managed.NewMRMetricRecorder()
 	stateMetrics := statemetrics.NewMRStateMetrics()
