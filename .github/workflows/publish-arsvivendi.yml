@@ -14,7 +14,7 @@ concurrency:
 
 env:
   GO_VERSION: '1.27.4'
-  CROSSPLANE_VERSION: 'v2.3.3'
+  CROSSPLANE_VERSION: 'v2.4.2'
   OPENTOFU_VERSION: '1.13.9'
   TERRAFORM_PROVIDER_VERSION: '5.29.0'
   FAMILY_REPOSITORY: ghcr.io/cwahn/provider-family-cloudflare

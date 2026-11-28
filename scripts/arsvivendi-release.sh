@@ -27,8 +27,8 @@ install_crossplane() {
     local url="https://releases.crossplane.io/stable/${CROSSPLANE_VERSION:?}/bin/linux_${arch}/crossplane"
     local sha
     case "$CROSSPLANE_VERSION/$arch" in
-        v2.3.3/amd64) sha=65e059fe2591b7b085cbb28f0f68163e94dfdbc521e4916aa5328bf96ca9b080 ;;
-        v2.3.3/arm64) sha=c760c6bb7348f878c81cf85ab3f9da573083a1531adcb08a4ec2725b5ae7a792 ;;
+        v2.4.2/amd64) sha=943bf9c8507771e29978611d2f9f8d73be35e7e57b62f48235bb181b6fbe6d33 ;;
+        v2.4.2/arm64) sha=7a3296b3489c24ddbe6d5b9121cdf4e50905034dda38b412f6220f7548928057 ;;
         *) echo "No pinned Crossplane CLI checksum for $CROSSPLANE_VERSION/$arch" >&2; exit 1 ;;
     esac
     curl -fsSL --retry 3 "$url" -o "$workspace/crossplane"
@@ -59,8 +59,11 @@ build() {
             --build-arg "TERRAFORM_NATIVE_PROVIDER_BINARY=terraform-provider-cloudflare_v${TERRAFORM_PROVIDER_VERSION}" \
             "$context"
         [[ "$(docker image inspect --format '{{.Architecture}}' "$image")" == "$arch" ]]
-        docker run --rm --network none "$image" --enable-secret-cache=false --help > "$workspace/help"
-        grep -Fq -- 'enable-secret-cache' "$workspace/help"
+        if ! docker run --rm --network none "$image" --enable-secret-cache=false --help >"$workspace/help" 2>&1; then
+            cat "$workspace/help" >&2
+            return 1
+        fi
+        grep -F -- 'enable-secret-cache' "$workspace/help"
         bash scripts/build-family.sh "$group" "$version" "$output" "$workspace/crossplane" \
             arsvivendi-local "$arch" "linux_$arch"
         rm "$context/bin/linux_${arch}/$group"
