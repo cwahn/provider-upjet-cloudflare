@@ -24,6 +24,19 @@ env:
   DOCKER_BUILDX_VERSION: 'v0.30.1'
 
 jobs:
+  verify-arsvivendi-cli:
+    if: github.repository == 'cwahn/provider-upjet-cloudflare' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arsvivendi/')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    env:
+      CROSSPLANE_CLI_VERSION: 'v2.4.1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify official CLI and xpkg command
+        run: bash scripts/arsvivendi-release.sh check-cli
+
   detect-noop:
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-24.04"') }}
     outputs:

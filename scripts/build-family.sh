@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./scripts/build-family.sh <subpackage> <version> <output-dir> <crossplane-cli> <build-registry> <arch> <platform>
+#   Set RUNTIME_IMAGE_TARBALL to embed the supplied image archive instead of using Docker's image cache.
 #
 # Each sub-provider gets:
 #   1. Filtered CRDs (only its API group)
@@ -43,7 +44,7 @@ REPO_NAME=$(map_repo_name "${SUBPACKAGE}")
 FAMILY_REPOSITORY="${FAMILY_REPOSITORY:-xpkg.upbound.io/wildbitca/provider-family-cloudflare}"
 FAMILY_MIN_VERSION="${FAMILY_MIN_VERSION:-${VERSION}}"
 WORK_DIR=$(mktemp -d)
-trap "rm -rf ${WORK_DIR}" EXIT
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 mkdir -p "${WORK_DIR}/crds"
 
@@ -69,7 +70,7 @@ else
 fi
 
 # Count CRDs
-CRD_COUNT=$(ls "${WORK_DIR}/crds/"*.yaml 2>/dev/null | wc -l | tr -d ' ')
+CRD_COUNT=$(find "${WORK_DIR}/crds" -maxdepth 1 -type f -name '*.yaml' | wc -l | tr -d ' ')
 echo "  ${SUBPACKAGE}: ${CRD_COUNT} CRDs"
 
 if [ "${CRD_COUNT}" -eq 0 ] && [ "${SUBPACKAGE}" != "config" ]; then
@@ -129,10 +130,15 @@ fi
 
 # Build xpkg
 IMAGE_NAME="${BUILD_REGISTRY}/${REPO_NAME}-${ARCH}"
+if [[ -n "${RUNTIME_IMAGE_TARBALL:-}" ]]; then
+    RUNTIME_ARGS=(--embed-runtime-image-tarball "${RUNTIME_IMAGE_TARBALL}")
+else
+    RUNTIME_ARGS=(--embed-runtime-image "${IMAGE_NAME}")
+fi
 mkdir -p "${OUTPUT_DIR}/${PLATFORM}"
 
-${CROSSPLANE_CLI} xpkg build \
-    --embed-runtime-image "${IMAGE_NAME}" \
+"${CROSSPLANE_CLI}" xpkg build \
+    "${RUNTIME_ARGS[@]}" \
     --package-root "${WORK_DIR}" \
     --package-file "${OUTPUT_DIR}/${PLATFORM}/${REPO_NAME}-${VERSION}.xpkg"
 

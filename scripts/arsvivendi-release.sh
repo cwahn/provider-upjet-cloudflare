@@ -2,12 +2,6 @@
 # Called by publish-arsvivendi.yml on GitHub-hosted runners.
 set -euo pipefail
 
-version=${GITHUB_REF_NAME:?}
-arch=${BUILD_ARCH:?}
-version_regex='^v[0-9]+\.[0-9]+\.[0-9]+-arsvivendi\.[0-9]+$'
-[[ "$version" =~ $version_regex ]]
-[[ "$arch" == amd64 || "$arch" == arm64 ]]
-
 workspace=$(mktemp -d)
 trap 'rm -rf "$workspace"' EXIT
 
@@ -24,21 +18,30 @@ repo_for() {
 }
 
 install_crossplane() {
-    local url="https://releases.crossplane.io/stable/${CROSSPLANE_VERSION:?}/bin/linux_${arch}/crossplane"
+    [[ "$(uname -sm)" == "Linux aarch64" ]]
+    local url="https://cli.crossplane.io/stable/${CROSSPLANE_CLI_VERSION:?}/bin/linux_arm64/crossplane"
     local sha
-    case "$CROSSPLANE_VERSION/$arch" in
-        v2.4.2/amd64) sha=943bf9c8507771e29978611d2f9f8d73be35e7e57b62f48235bb181b6fbe6d33 ;;
-        v2.4.2/arm64) sha=7a3296b3489c24ddbe6d5b9121cdf4e50905034dda38b412f6220f7548928057 ;;
-        *) echo "No pinned Crossplane CLI checksum for $CROSSPLANE_VERSION/$arch" >&2; exit 1 ;;
+    case "$CROSSPLANE_CLI_VERSION" in
+        v2.4.1) sha=28dff5115b378fcee064d4c4c097727626e3dc17f83f9590f0ab347b8cc7d992 ;;
+        *) echo "No pinned arm64 Crossplane CLI checksum for $CROSSPLANE_CLI_VERSION" >&2; exit 1 ;;
     esac
     curl -fsSL --retry 3 "$url" -o "$workspace/crossplane"
     printf '%s  %s\n' "$sha" "$workspace/crossplane" | sha256sum -c -
     chmod 0755 "$workspace/crossplane"
+    "$workspace/crossplane" xpkg --help
+}
+
+require_release_tag() {
+    version=${GITHUB_REF_NAME:?}
+    local regex='^v[0-9]+\.[0-9]+\.[0-9]+-arsvivendi\.[0-9]+$'
+    [[ "$version" =~ $regex ]]
 }
 
 build() {
+    local arch=${BUILD_ARCH:?}
     local context="$workspace/image" group repo image
-    mkdir -p "$context/bin/linux_${arch}"
+    [[ "$arch" == amd64 || "$arch" == arm64 ]]
+    mkdir -p "$context/bin/linux_${arch}" "$output/runtime-images"
     cp cluster/images/provider-upjet-cloudflare/{Dockerfile,terraformrc.hcl} "$context/"
 
     for group in "${groups[@]}"; do
@@ -64,22 +67,26 @@ build() {
             return 1
         fi
         grep -F -- 'enable-secret-cache' "$workspace/help"
-        bash scripts/build-family.sh "$group" "$version" "$output" "$workspace/crossplane" \
-            arsvivendi-local "$arch" "linux_$arch"
+        # The Docker archive includes manifest.json, which the CLI tarball reader requires.
+        docker image save --output "$output/runtime-images/$repo.tar" "$image"
         rm "$context/bin/linux_${arch}/$group"
         docker image rm "$image"
     done
 }
 
+assert_image_arch() {
+    local archive=$1 arch=$2 config
+    config=$(tar -xOf "$archive" manifest.json | jq -er 'if length == 1 then .[0].Config else error("expected one runtime image") end')
+    tar -xOf "$archive" "$config" | jq -e --arg arch "$arch" \
+        '.os == "linux" and .architecture == $arch and .config.Entrypoint == ["provider"]'
+}
+
 publish() {
-    local group repo target filename
+    local group repo target filename arch archive
     local -a paths
     for group in "${groups[@]}"; do
         repo=$(repo_for "$group")
         target="$registry/$repo:$version"
-        filename="$repo-$version.xpkg"
-        [[ -s "$output/artifacts/xpkgs-amd64/$filename" ]]
-        [[ -s "$output/artifacts/xpkgs-arm64/$filename" ]]
         if docker buildx imagetools inspect "$target" >"$workspace/inspect" 2>&1; then
             echo "Refusing to overwrite existing release: $target" >&2
             exit 1
@@ -87,12 +94,19 @@ publish() {
             cat "$workspace/inspect" >&2
             exit 1
         fi
+        for arch in amd64 arm64; do
+            archive="$output/artifacts/runtime-images-$arch/$repo.tar"
+            assert_image_arch "$archive" "$arch"
+            RUNTIME_IMAGE_TARBALL="$archive" bash scripts/build-family.sh \
+                "$group" "$version" "$output" "$workspace/crossplane" arsvivendi-local "$arch" "linux_$arch"
+            assert_image_arch "$output/linux_$arch/$repo-$version.xpkg" "$arch"
+        done
     done
     for group in "${groups[@]}"; do
         repo=$(repo_for "$group")
         target="$registry/$repo:$version"
         filename="$repo-$version.xpkg"
-        paths=("$output/artifacts/xpkgs-amd64/$filename" "$output/artifacts/xpkgs-arm64/$filename")
+        paths=("$output/linux_amd64/$filename" "$output/linux_arm64/$filename")
         "$workspace/crossplane" xpkg push -f "${paths[0]},${paths[1]}" "$target"
         docker buildx imagetools inspect --raw "$target" | jq -e '
             ([.manifests[].platform | [.os, .architecture]] | sort) ==
@@ -102,7 +116,8 @@ publish() {
 }
 
 case "${1:-}" in
-    build) install_crossplane; build ;;
-    publish) install_crossplane; publish ;;
-    *) echo 'Usage: arsvivendi-release.sh build|publish' >&2; exit 2 ;;
+    check-cli) install_crossplane ;;
+    build) require_release_tag; build ;;
+    publish) require_release_tag; install_crossplane; publish ;;
+    *) echo 'Usage: arsvivendi-release.sh check-cli|build|publish' >&2; exit 2 ;;
 esac
