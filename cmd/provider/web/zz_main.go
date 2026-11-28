@@ -88,18 +88,7 @@ func main() {
 		}).String()
 	)
 
-	args := os.Args[1:]
-	// Kingpin's bool flags use --flag and --no-flag. Accept explicit boolean
-	// assignments too, so DeploymentRuntimeConfig can use --enable-secret-cache=false.
-	for i, arg := range args {
-		switch arg {
-		case "--enable-secret-cache=true":
-			args[i] = "--enable-secret-cache"
-		case "--enable-secret-cache=false":
-			args[i] = "--no-enable-secret-cache"
-		}
-	}
-	kingpin.MustParse(app.Parse(args))
+	kingpin.MustParse(app.Parse(normalizeSecretCacheArgs(os.Args[1:])))
 
 	zl := zap.New(zap.UseDevMode(*debug))
 	log := logging.NewLogrLogger(zl.WithName("provider-upjet-cloudflare"))
@@ -132,16 +121,9 @@ func main() {
 	kingpin.FatalIfError(apiextensionsv1.AddToScheme(scheme), "Cannot add api-extensions APIs to scheme")
 	kingpin.FatalIfError(authv1.AddToScheme(scheme), "Cannot add k8s authorization APIs to scheme")
 
-	var clientOpts client.Options
-	if !*enableSecretCache {
-		clientOpts.Cache = &client.CacheOptions{
-			DisableFor: []client.Object{&corev1.Secret{}},
-		}
-	}
-
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:           scheme,
-		Client:           clientOpts,
+		Client:           managerClientOptions(*enableSecretCache),
 		LeaderElection:   *leaderElection,
 		LeaderElectionID: "crossplane-leader-election-provider-upjet-cloudflare-web",
 		Cache: cache.Options{
@@ -258,6 +240,31 @@ func main() {
 	}
 
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
+}
+
+func normalizeSecretCacheArgs(args []string) []string {
+	// Kingpin's bool flags use --flag and --no-flag. Accept explicit boolean
+	// assignments too, so DeploymentRuntimeConfig can use --enable-secret-cache=false.
+	for i, arg := range args {
+		switch arg {
+		case "--enable-secret-cache=true":
+			args[i] = "--enable-secret-cache"
+		case "--enable-secret-cache=false":
+			args[i] = "--no-enable-secret-cache"
+		}
+	}
+	return args
+}
+
+func managerClientOptions(enableSecretCache bool) client.Options {
+	if enableSecretCache {
+		return client.Options{}
+	}
+	return client.Options{
+		Cache: &client.CacheOptions{
+			DisableFor: []client.Object{&corev1.Secret{}},
+		},
+	}
 }
 
 func canWatchCRD(ctx context.Context, mgr manager.Manager) (bool, error) {
